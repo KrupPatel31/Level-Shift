@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>LevelShift — Live Satellite Tracker</title>
+
+    <!-- Favicon -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='none' stroke='%23ffb454' stroke-width='4'/%3E%3Ccircle cx='50' cy='50' r='4' fill='%23ffb454'/%3E%3Cline x1='50' y1='8' x2='50' y2='20' stroke='%23ffb454' stroke-width='4'/%3E%3C/svg%3E"
+    />
+
+    <!-- Type: Space Grotesk (display), Inter (UI), JetBrains Mono (telemetry) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              display: ["'Space Grotesk'", "sans-serif"],
+              sans: ["Inter", "sans-serif"],
+              mono: ["'JetBrains Mono'", "ui-monospace", "monospace"],
+            },
+          },
+        },
+      };
+    </script>
+
+    <style>
+      :root {
+        --void: #05070c;
+        --void-2: #0a0e17;
+        --panel: rgba(9, 13, 21, 0.78);
+        --hairline: rgba(255, 255, 255, 0.09);
+        --hairline-strong: rgba(255, 255, 255, 0.16);
+        --text: #e7e9ef;
+        --text-dim: #7c8699;
+        --amber: #ffb454;
+        --amber-dim: rgba(255, 180, 84, 0.14);
+        --signal: #5eead4;
+        --violet: #c9a8ff;
+        --danger: #ff6b6b;
+      }
+
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: var(--amber) transparent;
+      }
+
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+
+      html {
+        /* keep 100dvh-accurate on mobile browsers with dynamic toolbars */
+        height: 100%;
+      }
+
+      body {
+        background: var(--void);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -2;
+        background: radial-gradient(
+          ellipse 120% 80% at 50% 100%,
+          #131a29 0%,
+          var(--void) 60%
+        );
+      }
+
+      /* faint radar grid, signature backdrop texture */
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.035) 1px,
+            transparent 1px
+          );
+        background-size: 48px 48px;
+        mask-image: radial-gradient(
+          ellipse 70% 70% at 50% 45%,
+          #000 20%,
+          transparent 75%
+        );
+      }
+
+      .font-display {
+        font-family: "Space Grotesk", sans-serif;
+      }
+
+      /* live pulse dot */
+      @keyframes pulse-dot {
+        0%,
+        100% {
+          opacity: 1;
+          box-shadow: 0 0 0 0 rgba(255, 180, 84, 0.55);
+        }
+        50% {
+          opacity: 0.55;
+          box-shadow: 0 0 0 4px rgba(255, 180, 84, 0);
+        }
+      }
+      .live-dot {
+        animation: pulse-dot 2s ease-in-out infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .spinner {
+        animation: spin 0.9s linear infinite;
+      }
+
+      /* HUD viewfinder corner brackets framing the globe */
+      .hud-corner {
+        position: fixed;
+        width: 18px;
+        height: 18px;
+        border-color: var(--hairline-strong);
+        z-index: 20;
+        pointer-events: none;
+      }
+      @media (min-width: 640px) {
+        .hud-corner {
+          width: 28px;
+          height: 28px;
+        }
+      }
+      .hud-corner.tl {
+        top: max(8px, env(safe-area-inset-top));
+        left: max(8px, env(safe-area-inset-left));
+        border-top: 1.5px solid;
+        border-left: 1.5px solid;
+      }
+      .hud-corner.tr {
+        top: max(8px, env(safe-area-inset-top));
+        right: max(8px, env(safe-area-inset-right));
+        border-top: 1.5px solid;
+        border-right: 1.5px solid;
+      }
+      .hud-corner.bl {
+        bottom: max(8px, env(safe-area-inset-bottom));
+        left: max(8px, env(safe-area-inset-left));
+        border-bottom: 1.5px solid;
+        border-left: 1.5px solid;
+      }
+      .hud-corner.br {
+        bottom: max(8px, env(safe-area-inset-bottom));
+        right: max(8px, env(safe-area-inset-right));
+        border-bottom: 1.5px solid;
+        border-right: 1.5px solid;
+      }
+
+      /* toolbar */
+      #toolbar {
+        background: var(--panel);
+        border-bottom: 1px solid var(--hairline);
+        backdrop-filter: blur(14px);
+        padding-top: max(0.5rem, env(safe-area-inset-top));
+        padding-left: max(0.75rem, env(safe-area-inset-left));
+        padding-right: max(0.75rem, env(safe-area-inset-right));
+      }
+
+      .divider {
+        width: 1px;
+        align-self: stretch;
+        background: var(--hairline);
+      }
+
+      #satellite-search {
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid var(--hairline-strong);
+        color: var(--text);
+        transition: border-color 0.2s ease;
+        font-size: 16px; /* prevents iOS auto-zoom on focus */
+      }
+      @media (min-width: 768px) {
+        #satellite-search {
+          font-size: 0.875rem;
+        }
+      }
+      #satellite-search::placeholder {
+        color: var(--text-dim);
+      }
+      #satellite-search:focus {
+        outline: none;
+        border-color: var(--amber);
+      }
+
+      /* filter segmented control — single .active class drives all styling */
+      .filter-btn {
+        color: var(--text-dim);
+        border: 1px solid transparent;
+        transition:
+          color 0.15s ease,
+          background-color 0.15s ease,
+          border-color 0.15s ease;
+      }
+      .filter-btn:hover {
+        color: var(--text);
+      }
+      .filter-btn.active {
+        color: var(--void);
+        background: var(--amber);
+        font-weight: 600;
+      }
+
+      #density-slider {
+        accent-color: var(--amber);
+      }
+      #density-slider::-webkit-slider-thumb {
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: var(--amber);
+        box-shadow: 0 0 8px rgba(255, 180, 84, 0.6);
+        cursor: pointer;
+      }
+      @media (min-width: 768px) {
+        #density-slider::-webkit-slider-thumb {
+          width: 12px;
+          height: 12px;
+        }
+      }
+
+      .icon-btn {
+        color: var(--text-dim);
+        border: 1px solid var(--hairline-strong);
+        transition:
+          color 0.15s ease,
+          border-color 0.15s ease,
+          background-color 0.15s ease;
+        flex-shrink: 0;
+      }
+      .icon-btn:hover {
+        color: var(--amber);
+        border-color: var(--amber);
+        background: var(--amber-dim);
+      }
+      .icon-btn.is-on {
+        color: var(--amber);
+        border-color: var(--amber);
+        background: var(--amber-dim);
+      }
+
+      /* telemetry / overhead panel */
+      #overhead-panel {
+        background: var(--panel);
+        border: 1px solid var(--hairline-strong);
+        backdrop-filter: blur(14px);
+        transition:
+          transform 0.3s ease,
+          opacity 0.3s ease;
+        top: max(9.75rem, calc(env(safe-area-inset-top) + 9.75rem));
+      }
+      @media (min-width: 768px) {
+        #overhead-panel {
+          top: max(4.25rem, calc(env(safe-area-inset-top) + 4.25rem));
+        }
+      }
+      #overhead-list::-webkit-scrollbar {
+        width: 4px;
+      }
+      #overhead-list::-webkit-scrollbar-thumb {
+        background: var(--amber);
+        border-radius: 4px;
+      }
+      .overhead-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 3px 0;
+        border-bottom: 1px solid var(--hairline);
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      #info-panel {
+        background: var(--panel);
+        border: 1px solid var(--hairline-strong);
+        backdrop-filter: blur(10px);
+        color: var(--text);
+        font-family: "JetBrains Mono", monospace;
+        bottom: max(1rem, env(safe-area-inset-bottom));
+        left: max(1rem, env(safe-area-inset-left));
+      }
+
+      #legend {
+        background: var(--panel);
+        border: 1px solid var(--hairline-strong);
+        backdrop-filter: blur(10px);
+        bottom: max(1rem, env(safe-area-inset-bottom));
+        right: max(1rem, env(safe-area-inset-right));
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .live-dot,
+        .spinner {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body class="overflow-hidden text-[var(--text)] font-sans">
+    <!-- Icon sprite -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <defs>
+        <symbol
+          id="icon-satellite"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <rect x="9.2" y="9.2" width="5.6" height="5.6" rx="1" />
+          <rect
+            x="1.2"
+            y="10.6"
+            width="5"
+            height="2.8"
+            rx="0.6"
+            transform="rotate(-35 3.7 12)"
+          />
+          <rect
+            x="17.8"
+            y="10.6"
+            width="5"
+            height="2.8"
+            rx="0.6"
+            transform="rotate(-35 20.3 12)"
+          />
+          <path d="M14.6 9.4 19 5" />
+          <circle cx="19.6" cy="4.4" r="1" fill="currentColor" stroke="none" />
+        </symbol>
+        <symbol
+          id="icon-search"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        >
+          <circle cx="10.5" cy="10.5" r="6" />
+          <path d="M15 15l5.5 5.5" />
+        </symbol>
+        <symbol
+          id="icon-expand"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        >
+          <path d="M4 9V6a2 2 0 0 1 2-2h3" />
+          <path d="M15 4h3a2 2 0 0 1 2 2v3" />
+          <path d="M4 15v3a2 2 0 0 0 2 2h3" />
+          <path d="M20 15v3a2 2 0 0 1-2 2h-3" />
+        </symbol>
+        <symbol
+          id="icon-home"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M3.5 11.2 12 4l8.5 7.2" />
+          <path d="M5.5 9.8V19a1 1 0 0 0 1 1h4v-6h3v6h4a1 1 0 0 0 1-1V9.8" />
+        </symbol>
+        <symbol
+          id="icon-link"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        >
+          <path d="M8.3 9.7 11 7a3.2 3.2 0 0 1 4.5 4.5L13 14" />
+          <path d="M15.7 14.3 13 17a3.2 3.2 0 0 1-4.5-4.5L11 10" />
+        </symbol>
+        <symbol
+          id="icon-volume"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M4 9.5v5h3.4L12 18V6L7.4 9.5H4z" />
+          <path d="M16.2 8.6a5 5 0 0 1 0 6.8" />
+          <path d="M18.7 6.2a8.5 8.5 0 0 1 0 11.6" />
+        </symbol>
+        <symbol
+          id="icon-volume-mute"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M4 9.5v5h3.4L12 18V6L7.4 9.5H4z" />
+          <path d="M16 9.5l4.5 5" />
+          <path d="M20.5 9.5 16 14.5" />
+        </symbol>
+        <symbol
+          id="icon-radar"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="8" />
+          <circle cx="12" cy="12" r="4.2" />
+          <path d="M12 12 12 4" />
+          <circle cx="15.8" cy="7.6" r="1" fill="currentColor" stroke="none" />
+        </symbol>
+        <symbol
+          id="icon-pin"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 21s7-6.7 7-12.2A7 7 0 0 0 5 8.8C5 14.3 12 21 12 21z" />
+          <circle cx="12" cy="8.8" r="2.1" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <div
+      id="loading-overlay"
+      class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[var(--void)]/90 backdrop-blur-sm"
+    >
+      <div
+        class="spinner w-10 h-10 border-2 border-[var(--amber)]/20 border-t-[var(--amber)] rounded-full mb-4"
+      ></div>
+      <p
+        class="text-[var(--text-dim)] text-sm font-mono tracking-widest uppercase"
+      >
+        Acquiring signal…
+      </p>
+    </div>
+
+    <div id="globe-container" class="w-screen h-screen h-[100dvh]"></div>
+
+    <!-- HUD viewfinder frame -->
+    <div class="hud-corner tl"></div>
+    <div class="hud-corner tr"></div>
+    <div class="hud-corner bl"></div>
+    <div class="hud-corner br"></div>
+
+    <div
+      id="toolbar"
+      class="absolute top-0 left-0 right-0 z-40 flex flex-wrap items-center gap-x-3 gap-y-2.5 pb-2.5 md:pb-2.5"
+    >
+      <!-- brand -->
+      <div class="flex items-center gap-2 order-1">
+        <svg class="w-5 h-5 text-[var(--amber)] shrink-0">
+          <use href="#icon-satellite" />
+        </svg>
+        <span
+          id="title"
+          class="font-display text-lg font-semibold tracking-tight text-[var(--text)] whitespace-nowrap"
+          >LevelShift</span
+        >
+        <span
+          class="flex items-center gap-1.5 pl-2 ml-1 border-l border-[var(--hairline)]"
+        >
+          <span
+            class="live-dot w-1.5 h-1.5 rounded-full bg-[var(--amber)] shrink-0"
+          ></span>
+          <span
+            class="text-[10px] font-mono tracking-[0.2em] text-[var(--amber)]"
+            >LIVE</span
+          >
+        </span>
+      </div>
+
+      <!-- stats + action controls -->
+      <div
+        class="flex items-center gap-1.5 sm:gap-2 ml-auto order-2 md:order-6"
+      >
+        <span
+          id="utc-clock"
+          class="hidden md:inline text-[11px] font-mono text-[var(--text-dim)] tabular-nums"
+          >--:--:--Z</span
+        >
+        <span
+          id="satellite-counter"
+          class="px-2 sm:px-2.5 py-1 rounded-full text-[11px] font-mono border border-[var(--hairline-strong)] text-[var(--signal)]"
+          >0</span
+        >
+        <span
+          id="user-coords"
+          class="hidden sm:flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-mono border border-[var(--hairline-strong)] text-[var(--text-dim)]"
+          ><svg class="w-3 h-3"><use href="#icon-pin" /></svg
+          ><span id="user-coords-text">--, --</span></span
+        >
+
+        <div class="divider h-6"></div>
+
+        <button
+          id="fullscreen-btn"
+          title="Fullscreen"
+          aria-label="Toggle fullscreen"
+          class="icon-btn w-9 h-9 md:w-8 md:h-8 flex items-center justify-center rounded-full"
+        >
+          <svg class="w-4 h-4"><use href="#icon-expand" /></svg>
+        </button>
+        <button
+          id="reset-view-btn"
+          title="Reset view"
+          aria-label="Reset view"
+          class="icon-btn w-9 h-9 md:w-8 md:h-8 flex items-center justify-center rounded-full"
+        >
+          <svg class="w-4 h-4"><use href="#icon-home" /></svg>
+        </button>
+        <button
+          id="share-btn"
+          title="Share view"
+          aria-label="Copy shareable link"
+          class="icon-btn w-9 h-9 md:w-8 md:h-8 flex items-center justify-center rounded-full"
+        >
+          <svg class="w-4 h-4"><use href="#icon-link" /></svg>
+        </button>
+        <button
+          id="mute-btn"
+          title="Toggle sound"
+          aria-label="Toggle sound"
+          class="icon-btn w-9 h-9 md:w-8 md:h-8 flex items-center justify-center rounded-full"
+        >
+          <svg class="w-4 h-4" data-icon="volume-on">
+            <use href="#icon-volume" />
+          </svg>
+          <svg class="w-4 h-4 hidden" data-icon="volume-off">
+            <use href="#icon-volume-mute" />
+          </svg>
+        </button>
+        <button
+          id="toggle-overhead"
+          title="Overhead panel"
+          aria-label="Toggle overhead panel"
+          class="icon-btn w-9 h-9 md:w-8 md:h-8 flex items-center justify-center rounded-full"
+        >
+          <svg class="w-4 h-4"><use href="#icon-radar" /></svg>
+        </button>
+      </div>
+
+      <!-- search: own full-width row on mobile -->
+      <div
+        class="relative flex items-center w-full md:w-auto order-4 md:order-2"
+      >
+        <svg
+          class="w-4 h-4 md:w-3.5 md:h-3.5 absolute left-1 text-[var(--text-dim)]"
+        >
+          <use href="#icon-search" />
+        </svg>
+        <input
+          type="text"
+          id="satellite-search"
+          placeholder="Search satellite…"
+          class="w-full md:w-36 pl-6 pr-1 py-1.5 md:py-1 placeholder-[var(--text-dim)]"
+        />
+      </div>
+
+      <!-- filter chips: own row on mobile, horizontally scrollable -->
+      <div
+        id="filter-buttons"
+        class="flex gap-1 p-0.5 rounded-full bg-black/30 border border-[var(--hairline)] w-full md:w-auto overflow-x-auto no-scrollbar order-5 md:order-3"
+      >
+        <button
+          class="filter-btn active shrink-0 px-3 py-1.5 md:py-1 rounded-full text-[11px] font-mono uppercase tracking-wide"
+          data-filter="all"
+        >
+          All
+        </button>
+        <button
+          class="filter-btn shrink-0 px-3 py-1.5 md:py-1 rounded-full text-[11px] font-mono uppercase tracking-wide"
+          data-filter="starlink"
+        >
+          Starlink
+        </button>
+        <button
+          class="filter-btn shrink-0 px-3 py-1.5 md:py-1 rounded-full text-[11px] font-mono uppercase tracking-wide"
+          data-filter="iss"
+        >
+          ISS
+        </button>
+        <button
+          class="filter-btn shrink-0 px-3 py-1.5 md:py-1 rounded-full text-[11px] font-mono uppercase tracking-wide"
+          data-filter="noaa"
+        >
+          NOAA
+        </button>
+        <button
+          class="filter-btn shrink-0 px-3 py-1.5 md:py-1 rounded-full text-[11px] font-mono uppercase tracking-wide"
+          data-filter="gps"
+        >
+          GPS
+        </button>
+      </div>
+
+      <div class="hidden lg:flex items-center gap-2 order-6 md:order-4">
+        <label
+          for="density-slider"
+          class="text-[11px] font-mono uppercase tracking-wide text-[var(--text-dim)] whitespace-nowrap"
+          >Density</label
+        >
+        <input
+          type="range"
+          id="density-slider"
+          min="100"
+          max="2500"
+          value="2500"
+          step="100"
+          class="w-24 h-1 bg-[var(--hairline-strong)] rounded-full appearance-none cursor-pointer"
+        />
+        <span
+          id="density-value"
+          class="text-[11px] font-mono text-[var(--text-dim)] w-9 text-right"
+          >All</span
+        >
+      </div>
+    </div>
+
+    <div
+      id="overhead-panel"
+      class="overhead-panel fixed right-2 z-30 w-[min(16rem,calc(100vw-1rem))] rounded-xl p-3 text-xs text-[var(--text)] translate-x-[calc(100%+16px)] opacity-0 pointer-events-none"
+    >
+      <h3
+        class="font-display text-[11px] font-semibold uppercase tracking-widest text-[var(--amber)] mb-2 flex items-center gap-1.5"
+      >
+        <svg class="w-3.5 h-3.5"><use href="#icon-radar" /></svg>Overhead Now
+      </h3>
+      <ul id="overhead-list" class="space-y-0.5 max-h-40 overflow-y-auto"></ul>
+    </div>
+
+    <div
+      id="info-panel"
+      class="fixed z-30 max-w-[calc(100vw-2rem)] sm:max-w-xs rounded-lg px-3.5 py-2 sm:px-4 sm:py-2.5 text-xs"
+    >
+      Hover a satellite for details
+    </div>
+
+    <div
+      id="legend"
+      class="fixed z-30 flex flex-col gap-1 sm:gap-1.5 rounded-lg px-2.5 py-2 sm:px-3 sm:py-2.5 text-[10px] sm:text-xs text-[var(--text-dim)] font-mono"
+    >
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full" style="background: #ffb454"></span>
+        Starlink
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full" style="background: #5eead4"></span>
+        ISS
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full" style="background: #8ee66d"></span>
+        NOAA
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full" style="background: #c9a8ff"></span>
+        GPS
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full" style="background: #7c8699"></span>
+        Other
+      </div>
+    </div>
+
+    <script src="/satellite.min.js"></script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
