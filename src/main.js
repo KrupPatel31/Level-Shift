@@ -12,18 +12,8 @@ const isMobile =
     /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent));
 
 const PERF = isMobile
-  ? {
-      updateIntervalMs: 1200,
-      trailLimit: 12,
-      trailSteps: 10,
-      defaultDensity: 800,
-    }
-  : {
-      updateIntervalMs: 1000,
-      trailLimit: 50,
-      trailSteps: 20,
-      defaultDensity: Infinity,
-    };
+  ? { updateIntervalMs: 1200, defaultDensity: 800 }
+  : { updateIntervalMs: 1000, defaultDensity: Infinity };
 
 let satellites = [];
 let userMarker = null;
@@ -78,17 +68,6 @@ globe
   .pointRadius((d) => (d.isUserMarker ? 0.25 : 0.12))
   .pointsData([]);
 
-globe
-  .pathsData([])
-  .pathPoints("trail")
-  .pathPointLat("lat")
-  .pathPointLng("lng")
-  .pathPointAlt(0.001) // ground track: hug the globe surface instead of floating at orbital altitude
-  .pathColor((d) => d.trailColor || "#ffaa0066")
-  .pathDashLength(0.1)
-  .pathDashGap(0.02)
-  .pathDashAnimateTime(2000);
-
 function scaleAltitude(realAltKm) {
   if (!realAltKm || realAltKm <= 0) return 0.02;
   const minScale = 0.02;
@@ -123,15 +102,6 @@ function hashCode(str) {
     hash |= 0;
   }
   return hash;
-}
-
-// Trails were rendering fully opaque, which combined with a busy globe of
-// thousands of satellites reads as visual noise. Softening them keeps the
-// current-position dots (still fully opaque) as the clear focal point.
-function withAlpha(hexColor, alphaHex) {
-  if (!hexColor || hexColor.length !== 7 || hexColor[0] !== "#")
-    return hexColor;
-  return hexColor + alphaHex;
 }
 
 function filterSatellites(list, filter) {
@@ -228,27 +198,6 @@ function createSatellites(rawList) {
   return created;
 }
 
-function computeTrail(satrec, startTime, durationMin, steps) {
-  const points = [];
-  const stepMs = (durationMin * 60 * 1000) / steps;
-  for (let i = 0; i <= steps; i++) {
-    const future = new Date(startTime.getTime() + i * stepMs);
-    const posAndVel = propagate(satrec, future);
-    if (posAndVel && posAndVel.position) {
-      const gmst = gstime(future);
-      const geo = eciToGeodetic(posAndVel.position, gmst);
-      points.push({
-        lat: (geo.latitude * 180) / Math.PI,
-        lng: (geo.longitude * 180) / Math.PI,
-        alt: geo.height,
-      });
-    } else {
-      break;
-    }
-  }
-  return points;
-}
-
 function updatePositions() {
   const now = new Date();
   const gmst = gstime(now);
@@ -300,16 +249,6 @@ function updatePositions() {
     displaySats.length - (userMarker ? 1 : 0),
     satellites.length,
   );
-
-  const paths = [];
-  for (let i = 0; i < displaySats.length && i < PERF.trailLimit; i++) {
-    const sat = displaySats[i];
-    if (!sat.satrec) continue;
-    const trail = computeTrail(sat.satrec, now, 10, PERF.trailSteps);
-    if (trail.length > 1)
-      paths.push({ trail, trailColor: withAlpha(sat.color, "77") });
-  }
-  globe.pathsData(paths);
 
   if (userLat != null && userLng != null) updateOverheadList(validSats);
 }
