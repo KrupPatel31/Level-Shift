@@ -4,8 +4,8 @@ const { twoline2satrec, propagate, gstime, eciToGeodetic } = satellite;
 const LOCAL_TLE_FILE = "/tle.txt"; // absolute path served from public/
 
 // Detect low-power / mobile devices so we can scale computation down.
-// This dataset has ~16,000 satellites — recomputing all of them plus
-// orbital trails at 60fps (the old behavior) will lock up a phone's CPU.
+// This dataset has ~16,000 satellites — recomputing all of their orbital
+// positions at 60fps (the old behavior) will lock up a phone's CPU.
 const isMobile =
   window.matchMedia("(max-width: 767px)").matches ||
   (navigator.maxTouchPoints > 1 &&
@@ -71,7 +71,7 @@ globe
 function scaleAltitude(realAltKm) {
   if (!realAltKm || realAltKm <= 0) return 0.02;
   const minScale = 0.02;
-  const maxScale = 0.22; // tighter cap — keeps trails visibly closer to the globe
+  const maxScale = 0.22; // caps how far a satellite dot floats above the surface
   const scaled = Math.log(realAltKm + 1) * 0.032;
   return Math.min(maxScale, Math.max(minScale, scaled));
 }
@@ -201,7 +201,6 @@ function createSatellites(rawList) {
 function updatePositions() {
   const now = new Date();
   const gmst = gstime(now);
-  let validCount = 0;
   satellites.forEach((sat) => {
     if (!sat.satrec) return;
     const posAndVel = propagate(sat.satrec, now);
@@ -210,7 +209,6 @@ function updatePositions() {
       sat.lat = (geo.latitude * 180) / Math.PI;
       sat.lng = (geo.longitude * 180) / Math.PI;
       sat.alt = geo.height;
-      validCount++;
     } else {
       sat.lat = null;
       sat.lng = null;
@@ -259,8 +257,8 @@ function updatePositions() {
 // cutting CPU load by roughly 60x compared to a per-frame recompute — this
 // is what was freezing the map (and every other control) on phones with
 // ~16k satellites loaded. globe.gl still renders/animates camera movement
-// and dashed trail animation on its own internal loop, so interaction stays
-// smooth even though satellite positions refresh on the slower timer.
+// on its own internal loop, so interaction stays smooth even though
+// satellite positions refresh on the slower timer.
 function startUpdateLoop() {
   if (updateTimer) clearInterval(updateTimer);
   updatePositions();
@@ -683,3 +681,23 @@ function startUtcClock() {
   setInterval(tick, 1000);
 }
 startUtcClock();
+
+// The toolbar wraps into a different number of rows depending on screen
+// width (e.g. search/filters/density each get their own row on mobile),
+// so its height isn't a fixed value. The overhead panel sits just below
+// it, so instead of a hardcoded CSS offset (which breaks any time the
+// toolbar's row count changes), track the toolbar's real rendered height
+// live and expose it as a CSS variable the panel's `top` reads from.
+function observeToolbarHeight() {
+  const toolbar = document.getElementById("toolbar");
+  if (!toolbar || !("ResizeObserver" in window)) return;
+  const applyHeight = () => {
+    document.documentElement.style.setProperty(
+      "--toolbar-h",
+      `${toolbar.offsetHeight}px`,
+    );
+  };
+  new ResizeObserver(applyHeight).observe(toolbar);
+  applyHeight();
+}
+observeToolbarHeight();

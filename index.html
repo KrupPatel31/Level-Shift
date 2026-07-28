@@ -52,6 +52,7 @@
         --signal: #5eead4;
         --violet: #c9a8ff;
         --danger: #ff6b6b;
+        --toolbar-h: 160px; /* overwritten live by ResizeObserver in main.js */
       }
 
       * {
@@ -313,13 +314,13 @@
         backdrop-filter: blur(14px);
         transition:
           transform 0.3s ease,
-          opacity 0.3s ease;
-        top: max(9.75rem, calc(env(safe-area-inset-top) + 9.75rem));
-      }
-      @media (min-width: 768px) {
-        #overhead-panel {
-          top: max(4.25rem, calc(env(safe-area-inset-top) + 4.25rem));
-        }
+          opacity 0.3s ease,
+          top 0.15s ease;
+        /* --toolbar-h is kept in sync with the toolbar's real rendered
+           height by a ResizeObserver in main.js, so this stays correct
+           no matter how many rows the toolbar wraps into on any given
+           screen size — no hardcoded magic numbers to go stale. */
+        top: calc(var(--toolbar-h, 160px) + 8px);
       }
       #overhead-list::-webkit-scrollbar {
         width: 4px;
