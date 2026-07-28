@@ -1,7 +1,29 @@
 import Globe from "globe.gl";
 const { twoline2satrec, propagate, gstime, eciToGeodetic } = satellite;
 
-const LOCAL_TLE_FILE = "/tle.txt"; // public/ folder ke liye absolute
+const LOCAL_TLE_FILE = "/tle.txt"; // absolute path served from public/
+
+// Detect low-power / mobile devices so we can scale computation down.
+// This dataset has ~16,000 satellites — recomputing all of them plus
+// orbital trails at 60fps (the old behavior) will lock up a phone's CPU.
+const isMobile =
+  window.matchMedia("(max-width: 767px)").matches ||
+  (navigator.maxTouchPoints > 1 &&
+    /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent));
+
+const PERF = isMobile
+  ? {
+      updateIntervalMs: 1200,
+      trailLimit: 12,
+      trailSteps: 10,
+      defaultDensity: 800,
+    }
+  : {
+      updateIntervalMs: 1000,
+      trailLimit: 50,
+      trailSteps: 20,
+      defaultDensity: Infinity,
+    };
 
 let satellites = [];
 let userMarker = null;
@@ -11,7 +33,9 @@ let activeFilter = "all";
 let isMuted = false;
 let maxDisplaySatellites = Infinity;
 let searchSatellite = null;
-let hoveredSatellite = null; // <-- NEW: currently hovered satellite
+let hoveredSatellite = null; // currently hovered satellite
+let updateTimer = null;
+let isPaused = false;
 
 let audioCtx = null;
 
@@ -59,7 +83,7 @@ globe
   .pathPoints("trail")
   .pathPointLat("lat")
   .pathPointLng("lng")
-  .pathPointAlt("alt")
+  .pathPointAlt(0.001) // ground track: hug the globe surface instead of floating at orbital altitude
   .pathColor((d) => d.trailColor || "#ffaa0066")
   .pathDashLength(0.1)
   .pathDashGap(0.02)
@@ -68,8 +92,8 @@ globe
 function scaleAltitude(realAltKm) {
   if (!realAltKm || realAltKm <= 0) return 0.02;
   const minScale = 0.02;
-  const maxScale = 0.4;
-  const scaled = Math.log(realAltKm + 1) * 0.045;
+  const maxScale = 0.22; // tighter cap — keeps trails visibly closer to the globe
+  const scaled = Math.log(realAltKm + 1) * 0.032;
   return Math.min(maxScale, Math.max(minScale, scaled));
 }
 
@@ -101,6 +125,15 @@ function hashCode(str) {
   return hash;
 }
 
+// Trails were rendering fully opaque, which combined with a busy globe of
+// thousands of satellites reads as visual noise. Softening them keeps the
+// current-position dots (still fully opaque) as the clear focal point.
+function withAlpha(hexColor, alphaHex) {
+  if (!hexColor || hexColor.length !== 7 || hexColor[0] !== "#")
+    return hexColor;
+  return hexColor + alphaHex;
+}
+
 function filterSatellites(list, filter) {
   if (filter === "all") return list;
   return list.filter((s) => {
@@ -113,13 +146,35 @@ function filterSatellites(list, filter) {
   });
 }
 
-async function fetchLocalTLE() {
+async function fetchLocalTLE(onProgress) {
   const response = await fetch(LOCAL_TLE_FILE);
   if (!response.ok)
     throw new Error(
       `Failed to load ${LOCAL_TLE_FILE} (status ${response.status})`,
     );
-  const text = await response.text();
+
+  // The TLE dataset is ~2.6MB — on a slow mobile connection that can take a
+  // while. Stream it with progress feedback instead of a blocking .text()
+  // call, so the loading screen doesn't look frozen.
+  const contentLength = response.headers.get("Content-Length");
+  const total = contentLength ? parseInt(contentLength, 10) : 0;
+  if (!response.body || !total) {
+    const text = await response.text();
+    return parseTLEText(text);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let received = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.length;
+    text += decoder.decode(value, { stream: true });
+    if (onProgress)
+      onProgress(Math.min(100, Math.round((received / total) * 100)));
+  }
   return parseTLEText(text);
 }
 
@@ -246,30 +301,67 @@ function updatePositions() {
     satellites.length,
   );
 
-  const trailLimit = 50;
   const paths = [];
-  for (let i = 0; i < displaySats.length && i < trailLimit; i++) {
+  for (let i = 0; i < displaySats.length && i < PERF.trailLimit; i++) {
     const sat = displaySats[i];
     if (!sat.satrec) continue;
-    const trail = computeTrail(sat.satrec, now, 10, 20);
-    if (trail.length > 1) paths.push({ trail, trailColor: sat.color });
+    const trail = computeTrail(sat.satrec, now, 10, PERF.trailSteps);
+    if (trail.length > 1)
+      paths.push({ trail, trailColor: withAlpha(sat.color, "77") });
   }
   globe.pathsData(paths);
 
   if (userLat != null && userLng != null) updateOverheadList(validSats);
+}
 
-  // --- NEW: Auto‑update info panel for the hovered satellite ---
-  const infoPanel = document.getElementById("info-panel");
-  if (infoPanel) {
-    if (hoveredSatellite) {
-      infoPanel.innerHTML = `<strong>${hoveredSatellite.name}</strong><br>Alt: ${hoveredSatellite.alt ? hoveredSatellite.alt.toFixed(0) : "?"} km<br>Lat/Lng: ${hoveredSatellite.lat.toFixed(2)}°, ${hoveredSatellite.lng.toFixed(2)}°`;
-      infoPanel.style.borderColor = "#5eead4";
-      infoPanel.style.color = "#5eead4";
+// Position updates run on a fixed-rate timer instead of requestAnimationFrame.
+// At orbital speeds a satellite's angular position barely changes within a
+// second, so updating once (or ~1.2x) per second is visually smooth while
+// cutting CPU load by roughly 60x compared to a per-frame recompute — this
+// is what was freezing the map (and every other control) on phones with
+// ~16k satellites loaded. globe.gl still renders/animates camera movement
+// and dashed trail animation on its own internal loop, so interaction stays
+// smooth even though satellite positions refresh on the slower timer.
+function startUpdateLoop() {
+  if (updateTimer) clearInterval(updateTimer);
+  updatePositions();
+  updateTimer = setInterval(() => {
+    if (!isPaused) updatePositions();
+  }, PERF.updateIntervalMs);
+}
+
+// Pause updates while the tab/app is backgrounded to save battery/CPU,
+// especially relevant on mobile where this matters a lot more.
+document.addEventListener("visibilitychange", () => {
+  isPaused = document.hidden;
+});
+
+// The info panel (hovered satellite's lat/lng/alt) gets its own fast loop,
+// separate from the throttled fleet-wide position update above. Tracking
+// just one satellite is cheap, so this can safely run at full frame rate
+// for a smooth live readout, without reintroducing the per-frame cost of
+// recomputing all ~16k satellites that was freezing the app on mobile.
+function hoverInfoLoop() {
+  if (!isPaused && hoveredSatellite && hoveredSatellite.satrec) {
+    const now = new Date();
+    const posAndVel = propagate(hoveredSatellite.satrec, now);
+    if (posAndVel && posAndVel.position) {
+      const gmst = gstime(now);
+      const geo = eciToGeodetic(posAndVel.position, gmst);
+      const lat = (geo.latitude * 180) / Math.PI;
+      const lng = (geo.longitude * 180) / Math.PI;
+      const alt = geo.height;
+      const infoPanel = document.getElementById("info-panel");
+      if (infoPanel) {
+        infoPanel.innerHTML = `<strong>${hoveredSatellite.name}</strong><br>Alt: ${alt.toFixed(0)} km<br>Lat/Lng: ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`;
+        infoPanel.style.borderColor = "#5eead4";
+        infoPanel.style.color = "#5eead4";
+      }
     }
   }
-
-  requestAnimationFrame(updatePositions);
+  requestAnimationFrame(hoverInfoLoop);
 }
+requestAnimationFrame(hoverInfoLoop);
 
 function angularDistance(lat1, lng1, lat2, lng2) {
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -346,29 +438,72 @@ globe.onPointHover((point) => {
   // When point is null, do nothing – keep the last hovered satellite
 });
 
-navigator.geolocation.getCurrentPosition(
-  (pos) => {
-    userLat = pos.coords.latitude;
-    userLng = pos.coords.longitude;
-    userMarker = {
-      lat: userLat,
-      lng: userLng,
-      alt: 0,
-      color: "#ffffff",
-      name: "📍 You are here",
-      isUserMarker: true,
-    };
-    updateUserCoordsDisplay();
-  },
-  (err) => console.warn("Geolocation denied. Overhead feature disabled."),
-);
+function setCoordsBadgeState(state, text) {
+  const badge = document.getElementById("user-coords");
+  const label = document.getElementById("user-coords-text");
+  if (!badge || !label) return;
+  badge.classList.remove("is-loading", "is-ok", "is-error");
+  if (state) badge.classList.add(state);
+  label.textContent = text;
+}
+
+function requestUserLocation() {
+  setCoordsBadgeState("is-loading", "Locating…");
+
+  if (!("geolocation" in navigator)) {
+    setCoordsBadgeState("is-error", "Not supported");
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      userLat = pos.coords.latitude;
+      userLng = pos.coords.longitude;
+      userMarker = {
+        lat: userLat,
+        lng: userLng,
+        alt: 0,
+        color: "#ffffff",
+        name: "📍 You are here",
+        isUserMarker: true,
+      };
+      updateUserCoordsDisplay();
+    },
+    (err) => {
+      // Give a real, visible reason instead of only logging to console —
+      // on mobile the person has no way to see console.warn output, so a
+      // silently-failing geolocation call just looks like a broken feature.
+      let msg = "Location unavailable";
+      if (err.code === err.PERMISSION_DENIED)
+        msg = "Location denied — tap to retry";
+      else if (err.code === err.POSITION_UNAVAILABLE)
+        msg = "Position unavailable — tap to retry";
+      else if (err.code === err.TIMEOUT)
+        msg = "Location timed out — tap to retry";
+      console.warn("Geolocation error:", err.message);
+      setCoordsBadgeState("is-error", msg);
+    },
+    {
+      enableHighAccuracy: false, // faster fix, less battery drain on mobile
+      timeout: 12000, // never hang forever waiting for a GPS lock indoors
+      maximumAge: 60000,
+    },
+  );
+}
+
+document
+  .getElementById("user-coords")
+  ?.addEventListener("click", requestUserLocation);
+requestUserLocation();
 
 function setupDensitySlider() {
   const slider = document.getElementById("density-slider");
   const valueSpan = document.getElementById("density-value");
   if (!slider || !valueSpan) return;
   slider.max = satellites.length;
-  slider.value = satellites.length;
+  slider.min = Math.min(100, satellites.length);
+  slider.step = Math.max(50, Math.round(satellites.length / 100));
+  slider.value = Math.min(PERF.defaultDensity, satellites.length);
   const updateDisplay = () => {
     const val = parseInt(slider.value);
     if (val >= satellites.length) {
@@ -393,10 +528,13 @@ async function init() {
     { once: true },
   );
 
+  const loadingText = document.querySelector("#loading-overlay p");
   let raw = [];
   let usingFallback = false;
   try {
-    raw = await fetchLocalTLE();
+    raw = await fetchLocalTLE((pct) => {
+      if (loadingText) loadingText.textContent = `Acquiring signal… ${pct}%`;
+    });
   } catch (e) {
     console.error("Local TLE load failed.", e);
     raw = [
@@ -433,7 +571,7 @@ async function init() {
     showError("Could not load tle.txt – showing sample satellites only.");
   hideLoading();
   setupDensitySlider();
-  updatePositions();
+  startUpdateLoop();
 }
 
 init();
@@ -450,24 +588,28 @@ filterButtons.forEach((btn) => {
 
 const searchInput = document.getElementById("satellite-search");
 if (searchInput) {
+  let searchDebounce = null;
   searchInput.addEventListener("input", (e) => {
     const query = e.target.value.toLowerCase().trim();
+    clearTimeout(searchDebounce);
     if (query === "") {
       searchSatellite = null;
       return;
     }
-    const matches = satellites.filter((s) =>
-      s.name.toLowerCase().includes(query),
-    );
-    if (matches.length > 0) {
-      searchSatellite = matches[0];
-      globe.pointOfView(
-        { lat: searchSatellite.lat, lng: searchSatellite.lng, altitude: 0.5 },
-        1000,
+    searchDebounce = setTimeout(() => {
+      const matches = satellites.filter((s) =>
+        s.name.toLowerCase().includes(query),
       );
-    } else {
-      searchSatellite = null;
-    }
+      if (matches.length > 0) {
+        searchSatellite = matches[0];
+        globe.pointOfView(
+          { lat: searchSatellite.lat, lng: searchSatellite.lng, altitude: 0.5 },
+          1000,
+        );
+      } else {
+        searchSatellite = null;
+      }
+    }, 150);
   });
 
   searchInput.addEventListener("keydown", (e) => {
@@ -521,8 +663,23 @@ if (toggleOverheadBtn && overheadPanel) {
 }
 
 document.getElementById("fullscreen-btn")?.addEventListener("click", () => {
-  if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-  else document.exitFullscreen();
+  // Fullscreen API support on mobile (especially iOS Safari) is
+  // inconsistent and can reject/throw rather than silently no-op.
+  try {
+    if (!document.fullscreenElement) {
+      const req = document.documentElement.requestFullscreen?.();
+      req?.catch?.(() =>
+        showError("Fullscreen isn't supported on this browser."),
+      );
+      if (!document.documentElement.requestFullscreen) {
+        showError("Fullscreen isn't supported on this browser.");
+      }
+    } else {
+      document.exitFullscreen();
+    }
+  } catch (e) {
+    showError("Fullscreen isn't supported on this browser.");
+  }
 });
 
 document.getElementById("reset-view-btn")?.addEventListener("click", () => {
@@ -569,9 +726,12 @@ try {
 } catch (e) {}
 
 function updateUserCoordsDisplay() {
-  const el = document.getElementById("user-coords-text");
-  if (el && userLat != null && userLng != null)
-    el.textContent = `${userLat.toFixed(2)}°, ${userLng.toFixed(2)}°`;
+  if (userLat != null && userLng != null) {
+    setCoordsBadgeState(
+      "is-ok",
+      `${userLat.toFixed(2)}°, ${userLng.toFixed(2)}°`,
+    );
+  }
 }
 
 function startUtcClock() {
