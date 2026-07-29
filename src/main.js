@@ -1,4 +1,5 @@
 import Globe from "globe.gl";
+import * as THREE from "three";
 const { twoline2satrec, propagate, gstime, eciToGeodetic } = satellite;
 
 const LOCAL_TLE_FILE = "/tle.txt"; // absolute path served from public/
@@ -54,11 +55,58 @@ function playBeepSequence() {
 }
 
 const globe = Globe()
-  .globeImageUrl("//unpkg.com/three-globe/example/img/earth-dark.jpg")
+  .globeImageUrl("//unpkg.com/three-globe/example/img/earth-blue-marble.jpg")
   .bumpImageUrl("//unpkg.com/three-globe/example/img/earth-topology.png")
+  .backgroundImageUrl("//unpkg.com/three-globe/example/img/night-sky.png")
+  .showAtmosphere(true)
+  .atmosphereColor("#5eb8ff")
+  .atmosphereAltitude(0.2)
   .pointOfView({ lat: 20.59, lng: 78.96, altitude: 2.5 })(
   document.getElementById("globe-container"),
 );
+
+// Thin, slowly-drifting cloud layer for extra realism. This is purely
+// additive to the three.js scene graph — independent of the satellite
+// points/data pipeline — so if the texture is slow or fails to load on a
+// bad connection, the rest of the app (globe, satellites, all controls)
+// keeps working normally regardless.
+function addCloudLayer() {
+  const CLOUDS_IMG_URL = "//unpkg.com/three-globe/example/img/clouds.png";
+  const CLOUDS_ALT = 0.008;
+  const CLOUDS_ROTATION_SPEED = -0.006; // deg/frame
+
+  new THREE.TextureLoader().load(
+    CLOUDS_IMG_URL,
+    (cloudsTexture) => {
+      const clouds = new THREE.Mesh(
+        new THREE.SphereGeometry(
+          globe.getGlobeRadius() * (1 + CLOUDS_ALT),
+          75,
+          75,
+        ),
+        new THREE.MeshPhongMaterial({
+          map: cloudsTexture,
+          transparent: true,
+          opacity: 0.55,
+        }),
+      );
+      globe.scene().add(clouds);
+
+      (function rotateClouds() {
+        clouds.rotation.y += (CLOUDS_ROTATION_SPEED * Math.PI) / 180;
+        requestAnimationFrame(rotateClouds);
+      })();
+    },
+    undefined,
+    () => {
+      // Non-fatal: the globe looks fine without clouds too.
+      console.warn(
+        "Cloud layer texture failed to load; continuing without it.",
+      );
+    },
+  );
+}
+addCloudLayer();
 
 globe
   .pointLat((d) => d.lat)
