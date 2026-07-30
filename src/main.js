@@ -21,6 +21,7 @@ let userMarker = null;
 let userLat = null;
 let userLng = null;
 let activeFilter = "all";
+let originFilter = "all";
 let isMuted = false;
 let maxDisplaySatellites = Infinity;
 let searchSatellite = null;
@@ -152,14 +153,71 @@ function hashCode(str) {
   return hash;
 }
 
-function filterSatellites(list, filter) {
-  if (filter === "all") return list;
+// Every TLE encodes its launch year and the exact moment ("epoch") the
+// orbital elements were measured — both are on line 1, at fixed column
+// positions per the standard NORAD TLE format. This gives us accurate
+// launch-year filtering and a real "data current as of" freshness read,
+// entirely from data we already have — no external service needed.
+function parseTLEEpoch(tle1) {
+  const pivotYear = (yy) => (yy < 57 ? 2000 + yy : 1900 + yy);
+
+  const launchYY = parseInt(tle1.substring(9, 11), 10);
+  const launchYear = Number.isNaN(launchYY) ? null : pivotYear(launchYY);
+
+  const epochYY = parseInt(tle1.substring(18, 20), 10);
+  const epochDayFrac = parseFloat(tle1.substring(20, 32));
+  let epochDate = null;
+  if (!Number.isNaN(epochYY) && !Number.isNaN(epochDayFrac)) {
+    const dayOfYear = Math.floor(epochDayFrac);
+    const dayFraction = epochDayFrac - dayOfYear;
+    epochDate = new Date(Date.UTC(pivotYear(epochYY), 0, 1));
+    epochDate.setUTCDate(epochDate.getUTCDate() + dayOfYear - 1);
+    epochDate.setUTCMilliseconds(Math.round(dayFraction * 86400000));
+  }
+
+  return { launchYear, epochDate };
+}
+
+// TLE data has no country/operator field at all — this is a best-effort
+// guess from well-known naming conventions (STARLINK, GLONASS, etc), NOT
+// an authoritative registry lookup. It's clearly labeled as such in the UI.
+const ORIGIN_PATTERNS = [
+  {
+    re: /STARLINK|\bGPS\b|\bUSA[ -]|NOAA|LANDSAT|TDRS|IRIDIUM|ORBCOMM|PLANET|SPIRE|CYGNUS|DRAGON|NAVSTAR/,
+    origin: "US",
+  },
+  {
+    re: /COSMOS|GLONASS|METEOR|RESURS|YAMAL|\bEKS\b|GONETS|PROGRESS/,
+    origin: "RU",
+  },
+  {
+    re: /YAOGAN|BEIDOU|TIANGONG|SHIJIAN|GAOFEN|FENGYUN|CHINASAT|JILIN|\bCZ-/,
+    origin: "CN",
+  },
+  { re: /GALILEO|SENTINEL|METOP|EUTELSAT|ARIANE/, origin: "EU" },
+  { re: /ONEWEB/, origin: "UK" },
+  { re: /CARTOSAT|RISAT|\bGSAT\b|IRNSS|OCEANSAT|\bPSLV\b/, origin: "IN" },
+  { re: /HIMAWARI|\bQZS\b|\bALOS\b|IGS[ -]/, origin: "JP" },
+  { re: /ISS \(ZARYA\)|^ISS$/, origin: "Intl" },
+];
+function guessOrigin(name) {
+  const upper = name.toUpperCase();
+  for (const p of ORIGIN_PATTERNS) {
+    if (p.re.test(upper)) return p.origin;
+  }
+  return "Other";
+}
+
+function filterSatellites(list, filter, origin) {
   return list.filter((s) => {
     const name = s.name.toUpperCase();
-    if (filter === "starlink") return name.includes("STARLINK");
-    if (filter === "iss") return name.includes("ISS");
-    if (filter === "noaa") return name.includes("NOAA");
-    if (filter === "gps") return name.includes("GPS");
+    let passConstellation = true;
+    if (filter === "starlink") passConstellation = name.includes("STARLINK");
+    else if (filter === "iss") passConstellation = name.includes("ISS");
+    else if (filter === "noaa") passConstellation = name.includes("NOAA");
+    else if (filter === "gps") passConstellation = name.includes("GPS");
+    if (!passConstellation) return false;
+    if (origin && origin !== "all" && s.origin !== origin) return false;
     return true;
   });
 }
@@ -227,6 +285,7 @@ function createSatellites(rawList) {
     .map((sat) => {
       try {
         const satrec = twoline2satrec(sat.tle1, sat.tle2);
+        const { launchYear, epochDate } = parseTLEEpoch(sat.tle1);
         return {
           ...sat,
           satrec,
@@ -236,6 +295,9 @@ function createSatellites(rawList) {
           color: getSatelliteColor(sat),
           isOverhead: false,
           entryTime: 0,
+          launchYear,
+          epochDate,
+          origin: guessOrigin(sat.name),
         };
       } catch (e) {
         console.error(`Error creating satrec for ${sat.name}:`, e);
@@ -265,7 +327,7 @@ function updatePositions() {
   });
 
   const validSats = satellites.filter((s) => s.lat != null);
-  const filteredSats = filterSatellites(validSats, activeFilter);
+  const filteredSats = filterSatellites(validSats, activeFilter, originFilter);
 
   let displaySats = filteredSats;
   if (
@@ -503,6 +565,69 @@ function setupDensitySlider() {
   updateDisplay();
 }
 
+// Shows the freshest TLE epoch across all loaded satellites — the actual
+// "as of" timestamp the orbital math is based on, not just when the page
+// happened to load. TLEs degrade in accuracy over time, so this is flagged
+// visually once the data starts getting stale.
+function updateDataFreshness(sats) {
+  const el = document.getElementById("data-epoch-text");
+  const badge = document.getElementById("data-epoch-badge");
+  if (!el) return;
+
+  const epochs = sats.map((s) => s.epochDate).filter(Boolean);
+  if (epochs.length === 0) {
+    el.textContent = "Data: unknown";
+    return;
+  }
+
+  const freshest = new Date(Math.max(...epochs.map((d) => d.getTime())));
+  const ageDays = (Date.now() - freshest.getTime()) / 86400000;
+  const dateStr = freshest.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  el.textContent = `Data: ${dateStr}`;
+
+  if (badge) {
+    badge.classList.toggle("is-stale", ageDays > 7);
+    badge.title = `Freshest orbital data (TLE epoch) is from ${freshest.toUTCString()} — ${ageDays.toFixed(1)} day(s) old. Older TLEs drift further from a satellite's true position.`;
+  }
+}
+
+// The site loads its dataset from a static tle.txt bundled with the app —
+// it won't gain new data on its own. This periodically re-checks that same
+// file in case the person hosting the site has redeployed it with fresher
+// TLEs (e.g. via a scheduled job), and swaps in the newer data live without
+// needing a page reload. If the fetch fails or returns nothing usable, the
+// currently-loaded data is left untouched — a bad refresh should never
+// erase good data.
+const REFRESH_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+function scheduleDataRefresh() {
+  setInterval(async () => {
+    try {
+      const raw = await fetchLocalTLE();
+      if (!raw || raw.length === 0) return;
+      const created = createSatellites(raw);
+      if (created.length === 0) return;
+
+      const latestEpoch = (list) =>
+        list.reduce(
+          (max, s) => (s.epochDate && s.epochDate > max ? s.epochDate : max),
+          new Date(0),
+        );
+      if (latestEpoch(created) > latestEpoch(satellites)) {
+        satellites = created;
+        setupDensitySlider();
+        updateDataFreshness(satellites);
+        console.info("TLE data refreshed — newer epoch detected.");
+      }
+    } catch (e) {
+      console.warn("Scheduled TLE refresh failed; keeping existing data.", e);
+    }
+  }, REFRESH_CHECK_INTERVAL_MS);
+}
+
 async function init() {
   document.addEventListener(
     "click",
@@ -556,7 +681,9 @@ async function init() {
     showError("Could not load tle.txt – showing sample satellites only.");
   hideLoading();
   setupDensitySlider();
+  updateDataFreshness(satellites);
   startUpdateLoop();
+  scheduleDataRefresh();
 }
 
 init();
@@ -565,10 +692,44 @@ init();
 const filterButtons = document.querySelectorAll(".filter-btn");
 filterButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
+    if (btn.disabled) return;
     filterButtons.forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     activeFilter = btn.dataset.filter;
   });
+});
+
+// Most origin + constellation combinations would silently return zero
+// results (e.g. "Russia" + "ISS" never matches anything, since the ISS is
+// tagged International) — rather than let people land on a confusing empty
+// globe, picking a specific country resets the constellation filter to
+// "All" and disables the other constellation buttons until origin is reset
+// back to "All" origins. This one function is the single source of truth
+// for that behavior, used both for direct user input and for restoring a
+// shared link, so the two can't drift out of sync.
+function applyOriginFilter(value) {
+  originFilter = value;
+
+  const originSelect = document.getElementById("origin-filter");
+  if (originSelect && originSelect.value !== value) originSelect.value = value;
+
+  const isSpecificOrigin = value !== "all";
+  filterButtons.forEach((btn) => {
+    if (btn.dataset.filter === "all") return; // ALL stays always available
+    btn.disabled = isSpecificOrigin;
+    btn.classList.toggle("is-disabled", isSpecificOrigin);
+  });
+
+  if (isSpecificOrigin && activeFilter !== "all") {
+    activeFilter = "all";
+    filterButtons.forEach((b) =>
+      b.classList.toggle("active", b.dataset.filter === "all"),
+    );
+  }
+}
+
+document.getElementById("origin-filter")?.addEventListener("change", (e) => {
+  applyOriginFilter(e.target.value);
 });
 
 const searchInput = document.getElementById("satellite-search");
@@ -582,8 +743,11 @@ if (searchInput) {
       return;
     }
     searchDebounce = setTimeout(() => {
-      const matches = satellites.filter((s) =>
-        s.name.toLowerCase().includes(query),
+      const isYearQuery = /^\d{4}$/.test(query);
+      const matches = satellites.filter(
+        (s) =>
+          s.name.toLowerCase().includes(query) ||
+          (isYearQuery && String(s.launchYear) === query),
       );
       if (matches.length > 0) {
         searchSatellite = matches[0];
@@ -678,6 +842,7 @@ document.getElementById("share-btn")?.addEventListener("click", () => {
     lng: lng.toFixed(2),
     alt: altitude.toFixed(2),
     filter: activeFilter,
+    origin: originFilter,
   });
   const url = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
   navigator.clipboard
@@ -699,6 +864,7 @@ try {
   const lng = parseFloat(urlParams.get("lng"));
   const alt = parseFloat(urlParams.get("alt"));
   const filter = urlParams.get("filter");
+  const origin = urlParams.get("origin");
   if (!isNaN(lat) && !isNaN(lng) && !isNaN(alt))
     globe.pointOfView({ lat, lng, altitude: alt }, 0);
   if (filter && ["all", "starlink", "iss", "noaa", "gps"].includes(filter)) {
@@ -707,6 +873,16 @@ try {
       btn.classList.remove("active");
       if (btn.dataset.filter === filter) btn.classList.add("active");
     });
+  }
+  // Applied after the constellation filter restore above so the same
+  // mutual-exclusivity rule from applyOriginFilter takes effect here too.
+  if (
+    origin &&
+    ["all", "US", "RU", "CN", "EU", "UK", "IN", "JP", "Intl", "Other"].includes(
+      origin,
+    )
+  ) {
+    applyOriginFilter(origin);
   }
 } catch (e) {}
 

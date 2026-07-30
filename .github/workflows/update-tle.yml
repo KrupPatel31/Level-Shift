@@ -1,0 +1,72 @@
+name: Update TLE data
+
+# Runs on GitHub's infrastructure on a schedule — this happens whether or
+# not your deployed site is currently reachable, which is exactly what
+# solves "hard to update tle.txt when the site isn't working". You can
+# also trigger it manually any time from the Actions tab.
+on:
+  schedule:
+    - cron: "17 4 * * *" # daily at 04:17 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  # CelesTrak's general "active satellites" catalog. Swap the GROUP value
+  # if you'd rather track a narrower or broader set — see the full list of
+  # available groups at https://celestrak.org/NORAD/elements/
+  TLE_SOURCE_URL: "https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle"
+  # Safety floor: if the download comes back with fewer lines than this,
+  # something's wrong (rate limit, outage, malformed response) — abort
+  # rather than ever overwrite good data with a broken file.
+  MIN_EXPECTED_LINES: 3000
+
+jobs:
+  update-tle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download latest TLE data
+        run: |
+          set -euo pipefail
+
+          curl -sSL --fail --retry 3 --retry-delay 5 \
+            -o public/tle.txt.new \
+            "$TLE_SOURCE_URL"
+
+          if [ ! -s public/tle.txt.new ]; then
+            echo "::error::Downloaded file is empty — aborting, keeping existing tle.txt"
+            exit 1
+          fi
+
+          lines=$(wc -l < public/tle.txt.new)
+          if [ "$lines" -lt "$MIN_EXPECTED_LINES" ]; then
+            echo "::error::Downloaded file looks too small ($lines lines, expected at least $MIN_EXPECTED_LINES) — aborting, keeping existing tle.txt"
+            rm -f public/tle.txt.new
+            exit 1
+          fi
+
+          # Basic format sanity check: TLE lines should come in sets of 3
+          # (name, line 1 starting with "1 ", line 2 starting with "2 ").
+          if ! awk 'NR%3==2 && $0 !~ /^1 /{ bad=1 } NR%3==0 && $0 !~ /^2 /{ bad=1 } END{ exit bad }' public/tle.txt.new; then
+            echo "::error::Downloaded file doesn't look like valid TLE format — aborting, keeping existing tle.txt"
+            rm -f public/tle.txt.new
+            exit 1
+          fi
+
+          mv public/tle.txt.new public/tle.txt
+          echo "Downloaded $((lines / 3)) satellites."
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/tle.txt
+          if git diff --cached --quiet; then
+            echo "No changes — TLE data is already up to date."
+          else
+            git commit -m "chore: auto-update tle.txt"
+            git push
+          fi
