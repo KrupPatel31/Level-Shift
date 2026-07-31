@@ -82,11 +82,17 @@
         position: fixed;
         inset: 0;
         z-index: -2;
-        background: radial-gradient(
-          ellipse 120% 80% at 50% 100%,
-          #131a29 0%,
-          var(--void) 60%
-        );
+        background:
+          radial-gradient(
+            ellipse 70% 50% at 50% 0%,
+            rgba(255, 180, 84, 0.05) 0%,
+            transparent 55%
+          ),
+          radial-gradient(
+            ellipse 120% 80% at 50% 100%,
+            var(--void-2) 0%,
+            var(--void) 60%
+          );
       }
 
       /* faint radar grid, signature backdrop texture */
@@ -130,13 +136,75 @@
         animation: pulse-dot 2s ease-in-out infinite;
       }
 
-      @keyframes spin {
+      /* radar-sweep loader — the one deliberately bold motion moment,
+         thematically honest for a satellite tracker (a radar scan) rather
+         than a generic spinner. Center hub via ::after. */
+      .radar-loader {
+        position: relative;
+        width: 72px;
+        height: 72px;
+      }
+      .radar-loader::after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 5px;
+        height: 5px;
+        margin: -2.5px 0 0 -2.5px;
+        border-radius: 50%;
+        background: var(--amber);
+        box-shadow: 0 0 8px 2px rgba(255, 180, 84, 0.7);
+      }
+      .radar-ring {
+        position: absolute;
+        inset: 0;
+        border: 1px solid rgba(255, 180, 84, 0.22);
+        border-radius: 50%;
+      }
+      .radar-ring-2 {
+        inset: 16px;
+        border-color: rgba(255, 180, 84, 0.16);
+      }
+      .radar-sweep {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        overflow: hidden;
+        background: conic-gradient(
+          from 0deg,
+          rgba(255, 180, 84, 0.6) 0deg,
+          rgba(255, 180, 84, 0) 65deg,
+          rgba(255, 180, 84, 0) 360deg
+        );
+        animation: radar-spin 1.7s linear infinite;
+      }
+      @keyframes radar-spin {
         to {
           transform: rotate(360deg);
         }
       }
-      .spinner {
-        animation: spin 0.9s linear infinite;
+      .radar-blip {
+        position: absolute;
+        top: 20px;
+        left: 46px;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--signal);
+        box-shadow: 0 0 8px 2px rgba(94, 234, 212, 0.75);
+        animation: radar-blip 1.7s ease-in-out infinite;
+      }
+      @keyframes radar-blip {
+        0%,
+        40%,
+        76%,
+        100% {
+          opacity: 0;
+        }
+        55% {
+          opacity: 1;
+        }
       }
 
       /* HUD viewfinder corner brackets framing the globe */
@@ -147,6 +215,16 @@
         border-color: var(--hairline-strong);
         z-index: 20;
         pointer-events: none;
+        animation: hud-breathe 5s ease-in-out infinite;
+      }
+      @keyframes hud-breathe {
+        0%,
+        100% {
+          opacity: 0.65;
+        }
+        50% {
+          opacity: 1;
+        }
       }
       @media (min-width: 640px) {
         .hud-corner {
@@ -159,24 +237,28 @@
         left: max(8px, env(safe-area-inset-left));
         border-top: 1.5px solid;
         border-left: 1.5px solid;
+        animation-delay: 0s;
       }
       .hud-corner.tr {
         top: max(8px, env(safe-area-inset-top));
         right: max(8px, env(safe-area-inset-right));
         border-top: 1.5px solid;
         border-right: 1.5px solid;
+        animation-delay: 1.25s;
       }
       .hud-corner.bl {
         bottom: max(8px, env(safe-area-inset-bottom));
         left: max(8px, env(safe-area-inset-left));
         border-bottom: 1.5px solid;
         border-left: 1.5px solid;
+        animation-delay: 2.5s;
       }
       .hud-corner.br {
         bottom: max(8px, env(safe-area-inset-bottom));
         right: max(8px, env(safe-area-inset-right));
         border-bottom: 1.5px solid;
         border-right: 1.5px solid;
+        animation-delay: 3.75s;
       }
 
       /* toolbar */
@@ -224,10 +306,15 @@
         transition:
           color 0.15s ease,
           background-color 0.15s ease,
-          border-color 0.15s ease;
+          border-color 0.15s ease,
+          transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
       }
       .filter-btn:hover {
         color: var(--text);
+        transform: translateY(-1px);
+      }
+      .filter-btn:active {
+        transform: scale(0.95);
       }
       .filter-btn.active {
         color: var(--void);
@@ -266,13 +353,18 @@
         transition:
           color 0.15s ease,
           border-color 0.15s ease,
-          background-color 0.15s ease;
+          background-color 0.15s ease,
+          transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
         flex-shrink: 0;
       }
       .icon-btn:hover {
         color: var(--amber);
         border-color: var(--amber);
         background: var(--amber-dim);
+        transform: translateY(-1px);
+      }
+      .icon-btn:active {
+        transform: scale(0.92);
       }
       .icon-btn.is-on {
         color: var(--amber);
@@ -286,11 +378,16 @@
         transition:
           color 0.15s ease,
           border-color 0.15s ease,
-          background-color 0.15s ease;
+          background-color 0.15s ease,
+          transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
       }
       #user-coords:hover {
         border-color: var(--hairline-strong);
         background: rgba(255, 255, 255, 0.04);
+        transform: translateY(-1px);
+      }
+      #user-coords:active {
+        transform: scale(0.96);
       }
       #user-coords-dot {
         transition: background-color 0.2s ease;
@@ -326,8 +423,8 @@
         backdrop-filter: blur(14px);
         box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
         transition:
-          transform 0.3s ease,
-          opacity 0.3s ease,
+          transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+          opacity 0.25s ease,
           top 0.15s ease;
         /* --toolbar-h is kept in sync with the toolbar's real rendered
            height by a ResizeObserver in main.js, so this stays correct
@@ -373,7 +470,9 @@
 
       @media (prefers-reduced-motion: reduce) {
         .live-dot,
-        .spinner {
+        .radar-sweep,
+        .radar-blip,
+        .hud-corner {
           animation: none;
         }
       }
@@ -518,9 +617,12 @@
       id="loading-overlay"
       class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[var(--void)]/90 backdrop-blur-sm"
     >
-      <div
-        class="spinner w-10 h-10 border-2 border-[var(--amber)]/20 border-t-[var(--amber)] rounded-full mb-4"
-      ></div>
+      <div class="radar-loader mb-5">
+        <div class="radar-ring"></div>
+        <div class="radar-ring radar-ring-2"></div>
+        <div class="radar-sweep"></div>
+        <div class="radar-blip"></div>
+      </div>
       <p
         class="text-[var(--text-dim)] text-sm font-mono tracking-widest uppercase"
       >
@@ -542,7 +644,9 @@
     >
       <!-- brand -->
       <div class="flex items-center gap-2 order-1">
-        <svg class="w-5 h-5 text-[var(--amber)] shrink-0">
+        <svg
+          class="w-5 h-5 text-[var(--amber)] shrink-0 drop-shadow-[0_0_6px_rgba(255,180,84,0.5)]"
+        >
           <use href="#icon-satellite" />
         </svg>
         <span
