@@ -1,5 +1,6 @@
 import Globe from "globe.gl";
 import * as THREE from "three";
+import * as solar from "solar-calculator";
 const { twoline2satrec, propagate, gstime, eciToGeodetic } = satellite;
 
 const LOCAL_TLE_FILE = "/tle.txt"; // absolute path served from public/
@@ -108,6 +109,46 @@ function addCloudLayer() {
   );
 }
 addCloudLayer();
+
+// Day/night terminator: a soft, semi-transparent glow oriented toward the
+// sun's real current position, using globe.gl's built-in tiles layer
+// (the same official pattern from its "solar-terminator" example). This is
+// driven by actual current time, not an accelerated animation — the
+// sub-solar point moves slowly enough that recomputing it once a minute
+// is visually seamless, so it's folded into the existing update loop
+// rather than adding a new per-frame timer.
+function sunPosAt(date) {
+  const dt = +date;
+  const dayStartMs = new Date(dt).setUTCHours(0, 0, 0, 0);
+  const t = solar.century(dt);
+  const longitude = ((dayStartMs - dt) / 864e5) * 360 - 180;
+  return [longitude - solar.equationOfTime(t) / 4, solar.declination(t)];
+}
+
+const solarTile = { pos: sunPosAt(new Date()) };
+
+globe
+  .tilesData([solarTile])
+  .tileLng((d) => d.pos[0])
+  .tileLat((d) => d.pos[1])
+  .tileAltitude(0.005)
+  .tileWidth(180)
+  .tileHeight(180)
+  .tileUseGlobeProjection(false)
+  .tileMaterial(
+    () =>
+      new THREE.MeshLambertMaterial({
+        color: "#ffcf6b", // warm gold, matching the existing amber HUD accent
+        opacity: 0.22,
+        transparent: true,
+      }),
+  )
+  .tilesTransitionDuration(0);
+
+function updateTerminator() {
+  solarTile.pos = sunPosAt(new Date());
+  globe.tilesData([solarTile]);
+}
 
 globe
   .pointLat((d) => d.lat)
@@ -311,6 +352,7 @@ function createSatellites(rawList) {
 function updatePositions() {
   const now = new Date();
   const gmst = gstime(now);
+  updateTerminator();
   satellites.forEach((sat) => {
     if (!sat.satrec) return;
     const posAndVel = propagate(sat.satrec, now);

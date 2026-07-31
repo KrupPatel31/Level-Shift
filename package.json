@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "globe.gl": "^2.46.1",
+    "solar-calculator": "^0.3.0",
     "three": "0.185.1"
   }
 }
