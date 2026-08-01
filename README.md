@@ -110,7 +110,7 @@ Orbital data comes from CelesTrak's "active satellites" TLE feed. A scheduled Gi
 
 ## License
 
-No license file is currently included in this repository. Add one (e.g. MIT) if you intend for others to reuse this code.
+No license file is currently included in this repository.
 
 ## Author
 
